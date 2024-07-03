@@ -4,16 +4,12 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,18 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.ViewModelProvider
 import com.example.cosync.ui.theme.COSyNCTheme
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import androidx.lifecycle.viewmodel.ViewModelInitializer
-import androidx.compose.ui.graphics.*
-import androidx.compose.runtime.*
-import androidx.lifecycle.ViewModelProvider
-
 
 class MainActivity : ComponentActivity() {
     private lateinit var bluetoothAdapter: BluetoothAdapter
@@ -111,31 +99,36 @@ class MainActivity : ComponentActivity() {
     private fun hasLocationPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    @SuppressLint("MissingPermission")
     private fun startScanning() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_SCAN), 1)
-            return
-        }
         val scanner = bluetoothAdapter.bluetoothLeScanner
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build()
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString("0x1800")).build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
+        scanner.startScan(null, settings, scanCallback) // No filter applied
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
             Log.d("MainActivity", "Device found: ${result.device.address}")
-            viewModel.updateDeviceList(result.device)  // Correctly access ViewModel here
+            viewModel.updateDeviceList(result.device)
+        }
+
+        override fun onBatchScanResults(results: List<ScanResult>) {
+            super.onBatchScanResults(results)
+            for (result in results) {
+                Log.d("MainActivity", "Batch device found: ${result.device.address}")
+                viewModel.updateDeviceList(result.device)
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            super.onScanFailed(errorCode)
+            Log.e("MainActivity", "Scan failed with error: $errorCode")
         }
     }
 
-
+    @SuppressLint("MissingPermission")
     private fun connectToDevice(device: BluetoothDevice) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 2)
-            return
-        }
         bluetoothGatt = device.connectGatt(this, false, gattCallback)
     }
 
@@ -154,6 +147,7 @@ class MainActivity : ComponentActivity() {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 for (service in gatt.services) {
                     Log.d("MainActivity", "Service discovered: ${service.uuid}")
+                    // Handle your service and characteristics here
                 }
             }
         }
@@ -170,7 +164,9 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
         topBar = { TopAppBar(title = { Text("Xhale - CO sensor") }) },
         content = { padding ->
             Column(
-                modifier = Modifier.padding(padding).padding(16.dp),
+                modifier = Modifier
+                    .padding(padding)
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text("Connection Status: ${sensorState.connectionStatus}", style = MaterialTheme.typography.titleLarge)
@@ -207,10 +203,8 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
     )
 }
 
-
-
 class SensorViewModel : ViewModel() {
-    private val _sensorState = MutableStateFlow(SensorState("Disconnected", "", emptyList()))
+    private val _sensorState = MutableStateFlow(SensorState("Disconnected", "No data", emptyList()))
     val sensorState: StateFlow<SensorState> = _sensorState
 
     fun updateDeviceList(device: BluetoothDevice) {
@@ -229,7 +223,5 @@ class SensorViewModel : ViewModel() {
         _sensorState.value = SensorState("Disconnected", "No data", emptyList())
     }
 
-
     data class SensorState(val connectionStatus: String, val sensorData: String, val devices: List<BluetoothDevice>)
 }
-
