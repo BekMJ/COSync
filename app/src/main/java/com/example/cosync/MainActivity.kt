@@ -107,17 +107,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private val scanCallback = object : ScanCallback() {
+        @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
-            Log.d("MainActivity", "Device found: ${result.device.address}")
-            viewModel.updateDeviceList(result.device)
+            val device = result.device
+            Log.d("MainActivity", "Device found: ${device.address}")
+            if (device.name == "Univ. Oklahoma NPL") {
+                viewModel.updateDeviceList(device)
+            }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onBatchScanResults(results: List<ScanResult>) {
             super.onBatchScanResults(results)
             for (result in results) {
-                Log.d("MainActivity", "Batch device found: ${result.device.address}")
-                viewModel.updateDeviceList(result.device)
+                val device = result.device
+                Log.d("MainActivity", "Batch device found: ${device.address}")
+                if (device.name == "Univ. Oklahoma NPL") {
+                    viewModel.updateDeviceList(device)
+                }
             }
         }
 
@@ -175,7 +183,17 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
                 // Display the list of devices
                 LazyColumn {
                     items(sensorState.devices) { device ->
-                        Text("Device: ${device.name ?: "Unknown"} - ${device.address}")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Device: ${device.name ?: "Unknown"} - ${device.address}")
+                            Button(onClick = { viewModel.connectToDevice(device) }) {
+                                Text("Connect")
+                            }
+                        }
                     }
                 }
 
@@ -213,6 +231,14 @@ class SensorViewModel : ViewModel() {
             updatedList.add(device)
             _sensorState.value = _sensorState.value.copy(devices = updatedList)
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun connectToDevice(device: BluetoothDevice) {
+        // Implement the connection logic here
+        // For example, updating the connection status and connecting to the GATT server
+        _sensorState.value = _sensorState.value.copy(connectionStatus = "Connected")
+        // Add actual connection logic if needed
     }
 
     fun scanForDevices() {
