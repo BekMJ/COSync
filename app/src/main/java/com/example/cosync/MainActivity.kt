@@ -21,14 +21,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.example.cosync.ui.theme.COSyNCTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.*
 
+@Suppress("DEPRECATION")
 class MainActivity : ComponentActivity() {
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private var bluetoothGatt: BluetoothGatt? = null
@@ -77,18 +78,6 @@ class MainActivity : ComponentActivity() {
             COSyNCTheme {
                 SensorDataScreen(viewModel) // Pass viewModel to Composable
             }
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun connectToDeviceByAddress() {
-        val deviceAddress = "D7:63:92:33:13:6D"
-        val device = bluetoothAdapter.getRemoteDevice(deviceAddress)
-        if (device != null) {
-            bluetoothGatt = device.connectGatt(this, false, gattCallback)
-            Log.d("MainActivity", "Trying to connect to: $deviceAddress")
-        } else {
-            Log.d("MainActivity", "Device not found with address: $deviceAddress")
         }
     }
 
@@ -151,12 +140,32 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 for (service in gatt.services) {
                     Log.d("MainActivity", "Service discovered: ${service.uuid}")
                     // Handle your service and characteristics here
                 }
+                val coSensorCharacteristic = gatt
+                    .getService(UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb"))
+                    ?.getCharacteristic(UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb"))
+                if (coSensorCharacteristic != null) {
+                    gatt.setCharacteristicNotification(coSensorCharacteristic, true)
+                    val descriptor = coSensorCharacteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+            }
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (characteristic.uuid == UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb")) {
+                val coData = characteristic.value
+                val coValue = String(coData) // Process the received data
+                Log.d("MainActivity", "CO Sensor Data: $coValue")
+                viewModel.updateSensorData(coValue)
             }
         }
     }
@@ -216,6 +225,17 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
                 ) {
                     Text("Disconnect")
                 }
+
+                Spacer(Modifier.height(10.dp))
+
+                if (sensorState.connectionStatus == "Connected") {
+                    Button(
+                        onClick = { viewModel.startMonitoring() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Start Monitoring CO Data")
+                    }
+                }
             }
         }
     )
@@ -247,6 +267,17 @@ class SensorViewModel : ViewModel() {
 
     fun disconnectDevice() {
         _sensorState.value = SensorState("Disconnected", "No data", emptyList())
+    }
+
+    fun startMonitoring() {
+        // Implement the monitoring logic here
+        // For example, updating the state and starting the characteristic notifications
+        _sensorState.value = _sensorState.value.copy(sensorData = "Monitoring...")
+        // Add actual monitoring logic if needed
+    }
+
+    fun updateSensorData(data: String) {
+        _sensorState.value = _sensorState.value.copy(sensorData = data)
     }
 
     data class SensorState(val connectionStatus: String, val sensorData: String, val devices: List<BluetoothDevice>)
