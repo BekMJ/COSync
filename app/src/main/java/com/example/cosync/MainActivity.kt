@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity() {
     private var bluetoothGatt: BluetoothGatt? = null
     private lateinit var viewModel: SensorViewModel
 
+
     private val enableBluetoothLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -130,6 +131,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
+        val ENVIRONMENTAL_SENSING_UUID = UUID.fromString("0000181A-0000-1000-8000-00805f9b34fb")
+        val CO_CONCENTRATION_UUID = UUID.fromString("00002BD0-0000-1000-8000-00805f9b34fb")
+
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -143,29 +147,29 @@ class MainActivity : ComponentActivity() {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                for (service in gatt.services) {
-                    Log.d("MainActivity", "Service discovered: ${service.uuid}")
-                    // Handle your service and characteristics here
-                }
-                val coSensorCharacteristic = gatt
-                    .getService(UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb"))
-                    ?.getCharacteristic(UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb"))
-                if (coSensorCharacteristic != null) {
-                    gatt.setCharacteristicNotification(coSensorCharacteristic, true)
-                    val descriptor = coSensorCharacteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
-                }
+                val environmentalSensingService = gatt.getService(ENVIRONMENTAL_SENSING_UUID)
+                environmentalSensingService?.let { service ->
+                    val coConcentrationCharacteristic = service.getCharacteristic(CO_CONCENTRATION_UUID)
+                    coConcentrationCharacteristic?.let { characteristic ->
+                        gatt.setCharacteristicNotification(characteristic, true)
+                        val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                    } ?: Log.e("MainActivity", "CO Concentration Characteristic not found")
+                } ?: Log.e("MainActivity", "Environmental Sensing Service not found")
+            } else {
+                Log.e("MainActivity", "Service discovery failed with status: $status")
             }
         }
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (characteristic.uuid == UUID.fromString("00002bd0-0000-1000-8000-00805f9b34fb")) {
+            if (characteristic.uuid == CO_CONCENTRATION_UUID) {
                 val coData = characteristic.value
-                val coValue = String(coData) // Process the received data
-                Log.d("MainActivity", "CO Sensor Data: $coValue")
-                viewModel.updateSensorData(coValue)
+                val hexString = coData.joinToString(separator = "-") { eachByte -> String.format("%02X", eachByte) }
+                val formattedString = "Received from ${characteristic.uuid}, value: $hexString"
+                Log.d("MainActivity", "CO Sensor Data: $formattedString")
+                viewModel.updateSensorData(formattedString)
             }
         }
     }
@@ -236,14 +240,34 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
                         Text("Start Monitoring CO Data")
                     }
                 }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Display the CO sensor data
+                LazyColumn {
+                    items(sensorState.coData) { data ->
+                        Text(data, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+
             }
         }
     )
 }
 
+
+
+
+
+
 class SensorViewModel : ViewModel() {
-    private val _sensorState = MutableStateFlow(SensorState("Disconnected", "No data", emptyList()))
+    private val _sensorState = MutableStateFlow(SensorState("Disconnected", "No data", emptyList(), emptyList(), displayData = false))
     val sensorState: StateFlow<SensorState> = _sensorState
+
+    fun toggleDisplayData() {
+        val currentState = _sensorState.value
+        _sensorState.value = currentState.copy(displayData = !currentState.displayData)
+    }
 
     fun updateDeviceList(device: BluetoothDevice) {
         val updatedList = _sensorState.value.devices.toMutableList()
@@ -255,30 +279,29 @@ class SensorViewModel : ViewModel() {
 
     @SuppressLint("MissingPermission")
     fun connectToDevice(device: BluetoothDevice) {
-        // Implement the connection logic here
-        // For example, updating the connection status and connecting to the GATT server
         _sensorState.value = _sensorState.value.copy(connectionStatus = "Connected")
         // Add actual connection logic if needed
     }
 
     fun scanForDevices() {
-        _sensorState.value = SensorState("Scanning...", "No data", _sensorState.value.devices)
+        _sensorState.value = _sensorState.value.copy(connectionStatus = "Scanning...", sensorData = "No data")
     }
 
     fun disconnectDevice() {
-        _sensorState.value = SensorState("Disconnected", "No data", emptyList())
+        _sensorState.value = _sensorState.value.copy(connectionStatus = "Disconnected", sensorData = "No data", devices = emptyList(), coData = emptyList())
     }
 
     fun startMonitoring() {
-        // Implement the monitoring logic here
-        // For example, updating the state and starting the characteristic notifications
+        // Implement the monitoring logic here if needed
         _sensorState.value = _sensorState.value.copy(sensorData = "Monitoring...")
-        // Add actual monitoring logic if needed
     }
 
     fun updateSensorData(data: String) {
-        _sensorState.value = _sensorState.value.copy(sensorData = data)
+        val updatedData = _sensorState.value.coData.toMutableList()
+        updatedData.add(data)
+        _sensorState.value = _sensorState.value.copy(sensorData = data, coData = updatedData)
     }
 
-    data class SensorState(val connectionStatus: String, val sensorData: String, val devices: List<BluetoothDevice>)
+    data class SensorState(val connectionStatus: String, val sensorData: String, val devices: List<BluetoothDevice>, val coData: List<String>, val displayData: Boolean)
 }
+
