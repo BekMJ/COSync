@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -32,29 +33,38 @@ import java.util.*
 @Suppress("DEPRECATION")
 class MainActivity : ComponentActivity() {
     private lateinit var bluetoothAdapter: BluetoothAdapter
-    private var bluetoothGatt: BluetoothGatt? = null
     private lateinit var viewModel: SensorViewModel
 
+    // Bluetooth permissions for Android 12 and above
+    private val bluetoothPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
 
     private val enableBluetoothLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
             Log.d("MainActivity", "Bluetooth has been enabled by the user.")
-            if (hasLocationPermission()) startScanning()
+            if (hasBluetoothPermissions()) startScanning()
         } else {
             Log.d("MainActivity", "The user denied enabling Bluetooth or an error occurred.")
         }
     }
 
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            Log.d("MainActivity", "Location permission granted")
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions.all { it.value }) {
+            Log.d("MainActivity", "Bluetooth permissions granted")
             if (bluetoothAdapter.isEnabled) startScanning()
         } else {
-            Log.d("MainActivity", "Location permission denied")
+            Log.d("MainActivity", "Bluetooth permissions denied")
         }
     }
 
@@ -69,28 +79,36 @@ class MainActivity : ComponentActivity() {
         if (!bluetoothAdapter.isEnabled) {
             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
             enableBluetoothLauncher.launch(enableBtIntent)
-        } else if (!hasLocationPermission()) {
-            requestLocationPermission()
+        } else if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
         } else {
             startScanning()
         }
 
         setContent {
             COSyNCTheme {
-                SensorDataScreen(viewModel) // Pass viewModel to Composable
+                // Pass the MainActivity context to the Composable
+                SensorDataScreen(viewModel, this@MainActivity) // Pass context
             }
         }
     }
 
-    private fun requestLocationPermission() {
-        requestPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+    private fun requestBluetoothPermissions() {
+        requestPermissionLauncher.launch(bluetoothPermissions)
     }
 
-    private fun hasLocationPermission() =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    private fun hasBluetoothPermissions() =
+        bluetoothPermissions.all { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        }
 
     @SuppressLint("MissingPermission")
     private fun startScanning() {
+        if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
+            return
+        }
+
         val scanner = bluetoothAdapter.bluetoothLeScanner
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build()
         scanner.startScan(null, settings, scanCallback) // No filter applied
@@ -125,60 +143,68 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Properly handle GATT connection and disconnection
     @SuppressLint("MissingPermission")
-    private fun connectToDevice(device: BluetoothDevice) {
-        bluetoothGatt = device.connectGatt(this, false, gattCallback)
-    }
-
-    private val gattCallback = object : BluetoothGattCallback() {
-        val ENVIRONMENTAL_SENSING_UUID = UUID.fromString("0000181A-0000-1000-8000-00805f9b34fb")
-        val CO_CONCENTRATION_UUID = UUID.fromString("00002BD0-0000-1000-8000-00805f9b34fb")
-
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d("MainActivity", "Connected to GATT server.")
-                gatt.discoverServices()
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d("MainActivity", "Disconnected from GATT server.")
-            }
+    fun connectToDevice(device: BluetoothDevice) {
+        if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
+            return
         }
 
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                val environmentalSensingService = gatt.getService(ENVIRONMENTAL_SENSING_UUID)
-                environmentalSensingService?.let { service ->
-                    val coConcentrationCharacteristic = service.getCharacteristic(CO_CONCENTRATION_UUID)
-                    coConcentrationCharacteristic?.let { characteristic ->
-                        gatt.setCharacteristicNotification(characteristic, true)
-                        val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        gatt.writeDescriptor(descriptor)
-                    } ?: Log.e("MainActivity", "CO Concentration Characteristic not found")
-                } ?: Log.e("MainActivity", "Environmental Sensing Service not found")
-            } else {
-                Log.e("MainActivity", "Service discovery failed with status: $status")
-            }
-        }
+        val bluetoothGatt = device.connectGatt(this, false, object : BluetoothGattCallback() {
+            val ENVIRONMENTAL_SENSING_UUID = UUID.fromString("0000181A-0000-1000-8000-00805f9b34fb")
+            val CO_CONCENTRATION_UUID = UUID.fromString("00002BD0-0000-1000-8000-00805f9b34fb")
 
-        @Deprecated("Deprecated in Java")
-        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (characteristic.uuid == CO_CONCENTRATION_UUID) {
-                val coData = characteristic.value
-                val hexString = coData.joinToString(separator = "-") { eachByte -> String.format("%02X", eachByte) }
-                val formattedString = "Received from ${characteristic.uuid}, value: $hexString"
-                Log.d("MainActivity", "CO Sensor Data: $formattedString")
-                viewModel.updateSensorData(formattedString)
+            @SuppressLint("MissingPermission")
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    Log.d("MainActivity", "Connected to GATT server.")
+                    viewModel.updateConnectionStatus("Connected")
+                    gatt.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.d("MainActivity", "Disconnected from GATT server.")
+                    viewModel.updateConnectionStatus("Disconnected")
+                    gatt.close()
+                }
             }
-        }
+
+            @SuppressLint("MissingPermission")
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    val environmentalSensingService = gatt.getService(ENVIRONMENTAL_SENSING_UUID)
+                    environmentalSensingService?.let { service ->
+                        val coConcentrationCharacteristic = service.getCharacteristic(CO_CONCENTRATION_UUID)
+                        coConcentrationCharacteristic?.let { characteristic ->
+                            gatt.setCharacteristicNotification(characteristic, true)
+                            val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(descriptor)
+                        } ?: Log.e("MainActivity", "CO Concentration Characteristic not found")
+                    } ?: Log.e("MainActivity", "Environmental Sensing Service not found")
+                } else {
+                    Log.e("MainActivity", "Service discovery failed with status: $status")
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                if (characteristic.uuid == CO_CONCENTRATION_UUID) {
+                    val coData = characteristic.value
+                    val hexString = coData.joinToString(separator = "-") { eachByte -> String.format("%02X", eachByte) }
+                    val formattedString = "Received from ${characteristic.uuid}, value: $hexString"
+                    Log.d("MainActivity", "CO Sensor Data: $formattedString")
+                    viewModel.updateSensorData(formattedString)
+                }
+            }
+        })
+        viewModel.updateGattConnection(bluetoothGatt)
     }
 }
 
 @SuppressLint("MissingPermission")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
+fun SensorDataScreen(viewModel: SensorViewModel, context: Context) {
     val sensorState = viewModel.sensorState.collectAsState().value
 
     Scaffold(
@@ -203,7 +229,7 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text("Device: ${device.name ?: "Unknown"} - ${device.address}")
-                            Button(onClick = { viewModel.connectToDevice(device) }) {
+                            Button(onClick = { viewModel.connectToDevice(device, context) }) {
                                 Text("Connect")
                             }
                         }
@@ -255,14 +281,10 @@ fun SensorDataScreen(viewModel: SensorViewModel = SensorViewModel()) {
     )
 }
 
-
-
-
-
-
 class SensorViewModel : ViewModel() {
     private val _sensorState = MutableStateFlow(SensorState("Disconnected", "No data", emptyList(), emptyList(), displayData = false))
     val sensorState: StateFlow<SensorState> = _sensorState
+    private var bluetoothGatt: BluetoothGatt? = null
 
     fun toggleDisplayData() {
         val currentState = _sensorState.value
@@ -278,21 +300,27 @@ class SensorViewModel : ViewModel() {
     }
 
     @SuppressLint("MissingPermission")
-    fun connectToDevice(device: BluetoothDevice) {
-        _sensorState.value = _sensorState.value.copy(connectionStatus = "Connected")
-        // Add actual connection logic if needed
+    fun connectToDevice(device: BluetoothDevice, context: Context) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+            // Trigger the connection logic in MainActivity
+            (context as MainActivity).connectToDevice(device)
+        } else {
+            Log.e("SensorViewModel", "Bluetooth connect permission not granted")
+        }
     }
 
     fun scanForDevices() {
         _sensorState.value = _sensorState.value.copy(connectionStatus = "Scanning...", sensorData = "No data")
     }
 
+    @SuppressLint("MissingPermission")
     fun disconnectDevice() {
+        bluetoothGatt?.disconnect()
+        bluetoothGatt?.close()
         _sensorState.value = _sensorState.value.copy(connectionStatus = "Disconnected", sensorData = "No data", devices = emptyList(), coData = emptyList())
     }
 
     fun startMonitoring() {
-        // Implement the monitoring logic here if needed
         _sensorState.value = _sensorState.value.copy(sensorData = "Monitoring...")
     }
 
@@ -302,6 +330,19 @@ class SensorViewModel : ViewModel() {
         _sensorState.value = _sensorState.value.copy(sensorData = data, coData = updatedData)
     }
 
-    data class SensorState(val connectionStatus: String, val sensorData: String, val devices: List<BluetoothDevice>, val coData: List<String>, val displayData: Boolean)
-}
+    fun updateConnectionStatus(status: String) {
+        _sensorState.value = _sensorState.value.copy(connectionStatus = status)
+    }
 
+    fun updateGattConnection(gatt: BluetoothGatt) {
+        bluetoothGatt = gatt
+    }
+
+    data class SensorState(
+        val connectionStatus: String,
+        val sensorData: String,
+        val devices: List<BluetoothDevice>,
+        val coData: List<String>,
+        val displayData: Boolean
+    )
+}
